@@ -94,7 +94,7 @@ export default function SignupPage() {
       <div className="max-w-md w-full p-8 space-y-8 bg-gray-800 rounded-2xl shadow-2xl transition-all">
         <div className="text-center">
           <CheckCircleIcon className="mx-auto h-16 w-16 text-blue-500 mb-4" />
-          <h2 className="text-3xl font-extrabold text-white">Join Taskify</h2>
+          <h2 className="text-3xl font-extrabold text-white">Join Taskie</h2>
           <p className="mt-2 text-sm text-gray-400">
             Create your account to start managing your tasks.
           </p>
