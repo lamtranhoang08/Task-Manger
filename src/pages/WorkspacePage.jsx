@@ -150,8 +150,7 @@ export default function WorkspacePage() {
                 .select('project_id, role')
                 .eq('user_id', userId);
             console.log('membership data:', membershipData);
-                
-
+            
             if (membershipError) {
                 console.error('Error fetching user memberships:', membershipError);
                 throw membershipError;

@@ -11,7 +11,7 @@ export default function EditProjectModal({ open, onClose, project, onProjectUpda
     deadline: ''
   });
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('details'); // 'details' or 'members'
+  const [activeTab, setActiveTab] = useState('details'); 
   
   // Member management states
   const [teamMembers, setTeamMembers] = useState([]);

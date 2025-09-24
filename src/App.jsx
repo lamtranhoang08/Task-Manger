@@ -1,5 +1,5 @@
-// src/App.jsx - Optimized Authentication Handling
-import React, { useState, useEffect, useCallback } from "react";
+// src/App.jsx - Optimized Session Management
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "./lib/supabase";
 import DashboardPage from "./pages/DashboardPage";
@@ -11,19 +11,28 @@ import LoadingSpinner from "./components/common/LoadingSpinner";
 import WorkspacePage from "./pages/WorkspacePage";
 import Sidebar from "./components/common/Sidebar";
 
+// Session cache to prevent unnecessary refetching
+const sessionCache = {
+  user: null,
+  profile: null,
+  lastFetch: 0,
+  isValid: false,
+  TTL: 5 * 60 * 1000 // 5 minutes cache
+};
+
 // Layout with sidebar
-function Layout({ currentUser, onLogout, children }) {
+const Layout = React.memo(({ currentUser, onLogout, children }) => {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const getCurrentPage = () => {
+  const getCurrentPage = useCallback(() => {
     const path = location.pathname.replace("/", "");
     return path || "dashboard";
-  };
+  }, [location.pathname]);
 
-  const handlePageChange = (pageId) => {
+  const handlePageChange = useCallback((pageId) => {
     navigate(`/${pageId}`);
-  };
+  }, [navigate]);
 
   return (
     <div className="flex h-screen">
@@ -40,7 +49,7 @@ function Layout({ currentUser, onLogout, children }) {
       </main>
     </div>
   );
-}
+});
 
 // Email confirmation handler component
 function EmailConfirmationHandler() {
@@ -51,14 +60,13 @@ function EmailConfirmationHandler() {
 
   useEffect(() => {
     let isMounted = true;
+    let timeoutId;
 
     const handleEmailConfirmation = async () => {
       try {
-        // Check URL parameters for tokens
         const urlParams = new URLSearchParams(location.search);
         const fragment = new URLSearchParams(location.hash.substring(1));
         
-        // Check both search params and hash fragment for tokens
         const accessToken = urlParams.get('access_token') || fragment.get('access_token');
         const refreshToken = urlParams.get('refresh_token') || fragment.get('refresh_token');
         const type = urlParams.get('type') || fragment.get('type');
@@ -67,18 +75,20 @@ function EmailConfirmationHandler() {
           throw new Error('Invalid confirmation link');
         }
 
-        // Set the session using the tokens
         const { data: { session }, error: sessionError } = await supabase.auth.setSession({
           access_token: accessToken,
           refresh_token: refreshToken
         });
         
-        if (sessionError) {
-          throw sessionError;
-        }
+        if (sessionError) throw sessionError;
 
         if (session?.user && isMounted) {
-          // Ensure profile exists
+          // Update cache immediately
+          sessionCache.user = session.user;
+          sessionCache.lastFetch = Date.now();
+          sessionCache.isValid = true;
+
+          // Create profile if needed
           const { data: profile } = await supabase
             .from('profiles')
             .select('id')
@@ -86,19 +96,17 @@ function EmailConfirmationHandler() {
             .maybeSingle();
 
           if (!profile) {
-            await supabase
-              .from('profiles')
-              .insert([
-                {
-                  id: session.user.id,
-                  name: session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'User',
-                  email: session.user.email,
-                  created_at: new Date().toISOString(),
-                }
-              ]);
+            const newProfile = {
+              id: session.user.id,
+              name: session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'User',
+              email: session.user.email,
+              created_at: new Date().toISOString(),
+            };
+            
+            await supabase.from('profiles').insert([newProfile]);
+            sessionCache.profile = newProfile;
           }
 
-          // Success - redirect to dashboard
           navigate('/dashboard', { replace: true });
         } else {
           throw new Error('Failed to establish session');
@@ -109,8 +117,7 @@ function EmailConfirmationHandler() {
         if (isMounted) {
           setError(error.message);
           
-          // Redirect after showing error
-          setTimeout(() => {
+          timeoutId = setTimeout(() => {
             if (isMounted) {
               navigate('/login', {
                 state: {
@@ -125,17 +132,16 @@ function EmailConfirmationHandler() {
           }, 2000);
         }
       } finally {
-        if (isMounted) {
-          setConfirming(false);
-        }
+        if (isMounted) setConfirming(false);
       }
     };
 
-    const timeoutId = setTimeout(handleEmailConfirmation, 500);
+    const initTimeoutId = setTimeout(handleEmailConfirmation, 500);
 
     return () => {
       isMounted = false;
-      clearTimeout(timeoutId);
+      if (initTimeoutId) clearTimeout(initTimeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
     };
   }, [navigate, location.search, location.hash]);
 
@@ -173,11 +179,36 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [lastActivity, setLastActivity] = useState(Date.now());
-  const [isInitialized, setIsInitialized] = useState(false);
+  const [sessionChecking, setSessionChecking] = useState(false);
 
-  // Memoize the profile fetching function
-  const fetchUserProfile = useCallback(async (user) => {
+  // Check if cached session is still valid
+  const isCacheValid = useCallback(() => {
+    return sessionCache.isValid && 
+           sessionCache.user && 
+           (Date.now() - sessionCache.lastFetch) < sessionCache.TTL;
+  }, []);
+
+  // Optimized profile fetching with caching
+  const fetchUserProfile = useCallback(async (user, forceRefresh = false) => {
     try {
+      // Use cached profile if available and valid
+      if (!forceRefresh && sessionCache.profile && sessionCache.user?.id === user.id && isCacheValid()) {
+        const userName = sessionCache.profile.name ||
+          user.user_metadata?.full_name ||
+          user.user_metadata?.name ||
+          user.email?.split("@")[0] ||
+          "User";
+
+        setCurrentUser({
+          id: user.id,
+          email: user.email,
+          name: userName,
+          avatar: sessionCache.profile.avatar_url || null,
+        });
+        return;
+      }
+
+      // Fetch fresh profile data
       const { data: profileData } = await supabase
         .from("profiles")
         .select("name, avatar_url")
@@ -190,15 +221,24 @@ export default function App() {
         user.email?.split("@")[0] ||
         "User";
 
-      setCurrentUser({
+      const userObj = {
         id: user.id,
         email: user.email,
         name: userName,
         avatar: profileData?.avatar_url || null,
-      });
+      };
+
+      // Update cache
+      sessionCache.user = user;
+      sessionCache.profile = profileData || { name: userName };
+      sessionCache.lastFetch = Date.now();
+      sessionCache.isValid = true;
+
+      setCurrentUser(userObj);
     } catch (err) {
       console.error("Failed to fetch profile:", err);
-      // Fallback user object
+      
+      // Fallback without caching on error
       setCurrentUser({
         id: user.id,
         email: user.email,
@@ -206,12 +246,18 @@ export default function App() {
         avatar: null,
       });
     }
-  }, []);
+  }, [isCacheValid]);
 
-  // Optimized logout function
+  // Optimized logout with cache clearing
   const handleLogout = useCallback(async () => {
     try {
-      // Clear user state immediately for better UX
+      // Clear cache immediately
+      sessionCache.user = null;
+      sessionCache.profile = null;
+      sessionCache.isValid = false;
+      sessionCache.lastFetch = 0;
+      
+      // Clear user state immediately
       setCurrentUser(null);
       
       // Sign out from Supabase
@@ -219,123 +265,228 @@ export default function App() {
       
       if (error) {
         console.error("Logout error:", error);
-        // Even if logout fails, keep user state cleared
       }
-      
-      // Clear any cached data
-      localStorage.clear();
-      sessionStorage.clear();
       
     } catch (err) {
       console.error("Logout failed:", err);
-      // Ensure user is still logged out locally even if server call fails
-      setCurrentUser(null);
     }
   }, []);
 
-  // User activity tracking
-  useEffect(() => {
-    const updateActivity = () => setLastActivity(Date.now());
-    const events = ["mousemove", "keydown", "click", "scroll", "touchstart"];
+  // Optimized session checking
+  const checkSession = useCallback(async (showLoading = true) => {
+    if (sessionChecking) return; // Prevent concurrent checks
     
+    try {
+      if (showLoading) setSessionChecking(true);
+      
+      // Use cached session if valid
+      if (isCacheValid()) {
+        await fetchUserProfile(sessionCache.user);
+        return;
+      }
+
+      // Fetch fresh session
+      const { data: { session }, error } = await supabase.auth.getSession();
+      
+      if (error) {
+        console.error("Session error:", error);
+        sessionCache.isValid = false;
+        setCurrentUser(null);
+        return;
+      }
+      
+      if (session?.user) {
+        await fetchUserProfile(session.user);
+      } else {
+        sessionCache.isValid = false;
+        setCurrentUser(null);
+      }
+    } catch (err) {
+      console.error("Session check error:", err);
+      sessionCache.isValid = false;
+      setCurrentUser(null);
+    } finally {
+      if (showLoading) setSessionChecking(false);
+    }
+  }, [isCacheValid, fetchUserProfile, sessionChecking]);
+
+  // Activity tracking with throttling
+  useEffect(() => {
+    let throttleTimer;
+    
+    const updateActivity = () => {
+      if (throttleTimer) return;
+      
+      throttleTimer = setTimeout(() => {
+        setLastActivity(Date.now());
+        throttleTimer = null;
+      }, 1000); // Throttle to once per second
+    };
+
+    const events = ["mousemove", "keydown", "click", "scroll", "touchstart"];
     events.forEach((e) => window.addEventListener(e, updateActivity, { passive: true }));
     
-    return () => events.forEach((e) => window.removeEventListener(e, updateActivity));
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, updateActivity));
+      if (throttleTimer) clearTimeout(throttleTimer);
+    };
   }, []);
 
-  // Auto logout after inactivity
+  // Auto logout with improved logic
   useEffect(() => {
     if (!currentUser) return;
 
     const checkInactivity = () => {
-      if (Date.now() - lastActivity > 60 * 60 * 1000) { // 1 hour
+      const inactive = Date.now() - lastActivity;
+      const oneHour = 60 * 60 * 1000;
+      
+      if (inactive > oneHour) {
         handleLogout();
         alert("You have been logged out due to inactivity.");
       }
     };
 
-    const interval = setInterval(checkInactivity, 5 * 60 * 1000); // Check every 5 minutes
+    const interval = setInterval(checkInactivity, 10 * 60 * 1000); // Check every 10 minutes
     return () => clearInterval(interval);
   }, [currentUser, lastActivity, handleLogout]);
 
-  // Initialize auth and listen for changes
+  // Page visibility handling for session refresh
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden && currentUser) {
+        // Check session when page becomes visible again
+        checkSession(false);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [currentUser, checkSession]);
+
+  // Initialize auth
   useEffect(() => {
     let mounted = true;
+    let subscription;
 
     const initializeAuth = async () => {
       try {
-        const { data: { session }, error } = await supabase.auth.getSession();
-        
-        if (error) {
-          console.error("Session error:", error);
-        }
-        
-        if (session?.user && mounted) {
-          await fetchUserProfile(session.user);
-        }
+        await checkSession();
+
+        // Set up auth listener
+        const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
+          if (!mounted) return;
+          
+          console.log('Auth state change:', event);
+          
+          switch (event) {
+            case 'SIGNED_IN':
+              if (session?.user) {
+                await fetchUserProfile(session.user);
+              }
+              break;
+              
+            case 'SIGNED_OUT':
+              sessionCache.isValid = false;
+              sessionCache.user = null;
+              sessionCache.profile = null;
+              setCurrentUser(null);
+              break;
+              
+            case 'TOKEN_REFRESHED':
+              if (session?.user) {
+                // Update cache timestamp on token refresh
+                sessionCache.lastFetch = Date.now();
+                if (!currentUser || currentUser.id !== session.user.id) {
+                  await fetchUserProfile(session.user);
+                }
+              }
+              break;
+          }
+          
+          setLastActivity(Date.now());
+        });
+
+        subscription = data.subscription;
       } catch (err) {
         console.error("Auth init error:", err);
       } finally {
-        if (mounted) {
-          setLoading(false);
-          setIsInitialized(true);
-        }
+        if (mounted) setLoading(false);
       }
     };
 
     initializeAuth();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        if (!mounted || !isInitialized) return;
-        
-        console.log('Auth state change:', event, session?.user?.email || 'no user');
-        
-        switch (event) {
-          case 'SIGNED_IN':
-            if (session?.user) {
-              await fetchUserProfile(session.user);
-            }
-            break;
-            
-          case 'SIGNED_OUT':
-            setCurrentUser(null);
-            break;
-            
-          case 'TOKEN_REFRESHED':
-            // Only update if user changed or we don't have user data
-            if (session?.user && (!currentUser || currentUser.id !== session.user.id)) {
-              await fetchUserProfile(session.user);
-            }
-            break;
-            
-          default:
-            // Handle other events if needed
-            break;
-        }
-        
-        setLastActivity(Date.now());
-      }
-    );
-
     return () => {
       mounted = false;
       subscription?.unsubscribe();
     };
-  }, [isInitialized, fetchUserProfile, currentUser]);
+  }, []); // Only run once
 
   const refreshUserData = useCallback(async () => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        await fetchUserProfile(session.user);
-      }
-    } catch (error) {
-      console.error("Failed to refresh user data:", error);
+    if (currentUser) {
+      await fetchUserProfile({ ...currentUser }, true); // Force refresh
     }
-  }, [fetchUserProfile]);
+  }, [currentUser, fetchUserProfile]);
 
-  if (loading) {
+  // Memoized routes to prevent unnecessary re-renders
+  const routes = useMemo(() => (
+    <Routes>
+      <Route
+        path="/login"
+        element={currentUser ? <Navigate to="/dashboard" replace /> : <LoginPage />}
+      />
+      <Route
+        path="/signup"
+        element={currentUser ? <Navigate to="/dashboard" replace /> : <SignupPage />}
+      />
+      <Route
+        path="/auth/confirm"
+        element={<EmailConfirmationHandler />}
+      />
+      
+      {currentUser ? (
+        <>
+          <Route
+            path="/dashboard"
+            element={
+              <Layout currentUser={currentUser} onLogout={handleLogout}>
+                <DashboardPage currentUser={currentUser} />
+              </Layout>
+            }
+          />
+          <Route
+            path="/tasks"
+            element={
+              <Layout currentUser={currentUser} onLogout={handleLogout}>
+                <TasksPage currentUser={currentUser} />
+              </Layout>
+            }
+          />
+          <Route
+            path="/workspace"
+            element={
+              <Layout currentUser={currentUser} onLogout={handleLogout}>
+                <WorkspacePage currentUser={currentUser} />
+              </Layout>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <Layout currentUser={currentUser} onLogout={handleLogout}>
+                <ProfilePage currentUser={currentUser} onProfileUpdate={refreshUserData} />
+              </Layout>
+            }
+          />
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        </>
+      ) : (
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      )}
+    </Routes>
+  ), [currentUser, handleLogout, refreshUserData]);
+
+  if (loading || sessionChecking) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-white to-blue-50/20">
         <div className="text-center">
@@ -346,66 +497,5 @@ export default function App() {
     );
   }
 
-  return (
-    <Router>
-      <Routes>
-        {/* Public routes */}
-        <Route
-          path="/login"
-          element={currentUser ? <Navigate to="/dashboard" replace /> : <LoginPage />}
-        />
-        <Route
-          path="/signup"
-          element={currentUser ? <Navigate to="/dashboard" replace /> : <SignupPage />}
-        />
-        
-        {/* Email confirmation route */}
-        <Route
-          path="/auth/confirm"
-          element={<EmailConfirmationHandler />}
-        />
-        
-        {/* Protected routes */}
-        {currentUser ? (
-          <>
-            <Route
-              path="/dashboard"
-              element={
-                <Layout currentUser={currentUser} onLogout={handleLogout}>
-                  <DashboardPage currentUser={currentUser} />
-                </Layout>
-              }
-            />
-            <Route
-              path="/tasks"
-              element={
-                <Layout currentUser={currentUser} onLogout={handleLogout}>
-                  <TasksPage currentUser={currentUser} />
-                </Layout>
-              }
-            />
-            <Route
-              path="/workspace"
-              element={
-                <Layout currentUser={currentUser} onLogout={handleLogout}>
-                  <WorkspacePage currentUser={currentUser} />
-                </Layout>
-              }
-            />
-            <Route
-              path="/settings"
-              element={
-                <Layout currentUser={currentUser} onLogout={handleLogout}>
-                  <ProfilePage currentUser={currentUser} onProfileUpdate={refreshUserData} />
-                </Layout>
-              }
-            />
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          </>
-        ) : (
-          <Route path="*" element={<Navigate to="/login" replace />} />
-        )}
-      </Routes>
-    </Router>
-  );
+  return <Router>{routes}</Router>;
 }
