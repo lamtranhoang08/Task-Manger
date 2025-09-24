@@ -92,6 +92,25 @@ export default function LoginPage() {
     }
   };
 
+  const handleGoogleSignIn = async () => {
+    setGoogleLoading(true);
+    setError('');
+
+    try {
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: 'https://taskie-psi.vercel.app' // Your live domain
+        }
+      });
+
+      if (error) throw error;
+    } catch (err) {
+      setError(err.message);
+      setGoogleLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-900 text-gray-100">
       <div className="max-w-md w-full p-8 space-y-8 bg-gray-800 rounded-2xl shadow-2xl transition-all">
@@ -109,16 +128,15 @@ export default function LoginPage() {
               <p className="font-medium">{error}</p>
             </div>
           )}
-          
+
           {message && (
-            <div 
-              className={`p-4 rounded-md text-sm ${
-                messageType === 'success' 
+            <div
+              className={`p-4 rounded-md text-sm ${messageType === 'success'
                   ? 'bg-green-900 text-green-300 border border-green-700'
                   : messageType === 'error'
-                  ? 'bg-red-900 text-red-300 border border-red-700'  
-                  : 'bg-blue-900 text-blue-300 border border-blue-700'
-              }`} 
+                    ? 'bg-red-900 text-red-300 border border-red-700'
+                    : 'bg-blue-900 text-blue-300 border border-blue-700'
+                }`}
               role="alert"
             >
               <p className="font-medium">{message}</p>
