@@ -1,11 +1,14 @@
-// src/App.jsx
+// src/App.jsx - Production Ready with Enhanced Session Management and Error Handling
 import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "./lib/supabase";
 import LoadingSpinner from "./components/common/LoadingSpinner";
 import ErrorBoundary from "./components/common/ErrorBoundary";
 
-// Lazy load components for better performance
+// ============================================================================
+// LAZY LOADED COMPONENTS FOR PERFORMANCE
+// ============================================================================
+
 const DashboardPage = React.lazy(() => import("./pages/DashboardPage"));
 const TasksPage = React.lazy(() => import("./pages/TasksPage"));
 const LoginPage = React.lazy(() => import("./pages/LoginPage"));
@@ -14,69 +17,154 @@ const ProfilePage = React.lazy(() => import("./pages/ProfilePage"));
 const WorkspacePage = React.lazy(() => import("./pages/WorkspacePage"));
 const Sidebar = React.lazy(() => import("./components/common/Sidebar"));
 
-// Constants for better maintainability
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 1 hour
-const ACTIVITY_THROTTLE = 1000; // 1 second
-const INACTIVITY_CHECK_INTERVAL = 10 * 60 * 1000; // 10 minutes
-const SESSION_REFRESH_THRESHOLD = 30 * 60 * 1000; // 30 minutes
+// ============================================================================
+// CONSTANTS AND CONFIGURATION
+// ============================================================================
 
-// Enhanced session cache with better structure
+/**
+ * Application configuration constants
+ */
+const CONFIG = {
+  CACHE_TTL: 5 * 60 * 1000, // 5 minutes
+  INACTIVITY_TIMEOUT: 60 * 60 * 1000, // 1 hour
+  ACTIVITY_THROTTLE: 1000, // 1 second
+  INACTIVITY_CHECK_INTERVAL: 10 * 60 * 1000, // 10 minutes
+  SESSION_REFRESH_THRESHOLD: 30 * 60 * 1000, // 30 minutes
+  MAX_RETRIES: 3,
+  RETRY_DELAY: 1000,
+  SESSION_CHECK_DEBOUNCE: 2000, // 2 seconds
+  PROFILE_FETCH_TIMEOUT: 10000 // 10 seconds
+};
+
+/**
+ * Default session cache structure
+ */
+const DEFAULT_CACHE_DATA = {
+  user: null,
+  profile: null,
+  lastFetch: 0,
+  lastRefresh: 0,
+  isValid: false,
+  lastActivity: Date.now()
+};
+
+// ============================================================================
+// ENHANCED SESSION CACHE WITH BETTER PERFORMANCE
+// ============================================================================
+
+/**
+ * Enhanced session cache with event-driven updates and better error handling
+ */
 class SessionCache {
   constructor() {
-    this.data = {
-      user: null,
-      profile: null,
-      lastFetch: 0,
-      lastRefresh: 0,
-      isValid: false
-    };
+    this.data = { ...DEFAULT_CACHE_DATA };
     this.listeners = new Set();
+    this.operationLocks = new Map(); // Prevent concurrent operations
   }
 
+  /**
+   * Get a value from cache
+   */
   get(key) {
     return this.data[key];
   }
 
+  /**
+   * Set a single value in cache
+   */
   set(key, value) {
     this.data[key] = value;
     this.notifyListeners();
   }
 
+  /**
+   * Set multiple values atomically
+   */
   setMultiple(updates) {
     Object.assign(this.data, updates);
     this.notifyListeners();
   }
 
+  /**
+   * Check if cache is expired
+   */
   isExpired() {
-    return !this.data.isValid ||
-      (Date.now() - this.data.lastFetch) > CACHE_TTL;
+    return !this.data.isValid || (Date.now() - this.data.lastFetch) > CONFIG.CACHE_TTL;
   }
 
+  /**
+   * Check if user data is stale
+   */
+  isUserStale(userId) {
+    return !this.data.user || this.data.user.id !== userId || this.isExpired();
+  }
+
+  /**
+   * Clear cache and notify listeners
+   */
   clear() {
-    this.data = {
-      user: null,
-      profile: null,
-      lastFetch: 0,
-      lastRefresh: 0,
-      isValid: false
-    };
+    this.data = { ...DEFAULT_CACHE_DATA };
+    this.operationLocks.clear();
     this.notifyListeners();
   }
 
+  /**
+   * Subscribe to cache changes
+   */
   subscribe(callback) {
     this.listeners.add(callback);
     return () => this.listeners.delete(callback);
   }
 
+  /**
+   * Notify all listeners of changes
+   */
   notifyListeners() {
-    this.listeners.forEach(callback => callback(this.data));
+    this.listeners.forEach(callback => {
+      try {
+        callback(this.data);
+      } catch (error) {
+        console.error('Cache listener error:', error);
+      }
+    });
+  }
+
+  /**
+   * Acquire operation lock to prevent concurrent operations
+   */
+  acquireLock(operation) {
+    if (this.operationLocks.has(operation)) {
+      return false; // Already locked
+    }
+    this.operationLocks.set(operation, Date.now());
+    return true;
+  }
+
+  /**
+   * Release operation lock
+   */
+  releaseLock(operation) {
+    this.operationLocks.delete(operation);
+  }
+
+  /**
+   * Check if operation is locked
+   */
+  isLocked(operation) {
+    return this.operationLocks.has(operation);
   }
 }
 
+// Global session cache instance
 const sessionCache = new SessionCache();
 
-// Enhanced error handling utility
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+/**
+ * Enhanced error creation with context
+ */
 const createError = (message, code = 'UNKNOWN_ERROR', details = null) => {
   const error = new Error(message);
   error.code = code;
@@ -85,23 +173,28 @@ const createError = (message, code = 'UNKNOWN_ERROR', details = null) => {
   return error;
 };
 
-// Retry utility for network operations
-const withRetry = async (fn, maxRetries = 3, delay = 1000) => {
+/**
+ * Retry utility for network operations with exponential backoff
+ */
+const withRetry = async (fn, maxRetries = CONFIG.MAX_RETRIES, baseDelay = CONFIG.RETRY_DELAY) => {
   let lastError;
 
-  for (let i = 0; i < maxRetries; i++) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       return await fn();
     } catch (error) {
       lastError = error;
-
-      // Don't retry on auth errors
-      if (error.message?.includes('Invalid') || error.message?.includes('unauthorized')) {
+      
+      // Don't retry on certain errors
+      if (error.message?.includes('Invalid') || 
+          error.message?.includes('unauthorized') ||
+          error.name === 'AbortError') {
         throw error;
       }
 
-      if (i < maxRetries - 1) {
-        await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)));
+      if (attempt < maxRetries - 1) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
   }
@@ -109,41 +202,99 @@ const withRetry = async (fn, maxRetries = 3, delay = 1000) => {
   throw lastError;
 };
 
-// Layout with enhanced error boundaries and performance optimizations
+/**
+ * Debounce utility for preventing rapid function calls
+ */
+const debounce = (func, delay) => {
+  let timeoutId;
+  return (...args) => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => func(...args), delay);
+  };
+};
+
+/**
+ * Timeout wrapper for promises
+ */
+const withTimeout = (promise, timeoutMs, errorMessage = 'Operation timed out') => {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => 
+      setTimeout(() => reject(createError(errorMessage, 'TIMEOUT')), timeoutMs)
+    )
+  ]);
+};
+
+// ============================================================================
+// ENHANCED LAYOUT COMPONENT
+// ============================================================================
+
+/**
+ * Layout component with enhanced error boundaries and performance optimizations
+ */
 const Layout = React.memo(({ currentUser, onLogout, children }) => {
   const navigate = useNavigate();
   const location = useLocation();
 
+  /**
+   * Get current page from pathname
+   */
   const getCurrentPage = useCallback(() => {
     const path = location.pathname.replace("/", "");
     return path || "dashboard";
   }, [location.pathname]);
 
+  /**
+   * Handle page navigation with error recovery
+   */
   const handlePageChange = useCallback((pageId) => {
-    navigate(`/${pageId}`, { replace: false });
+    try {
+      navigate(`/${pageId}`, { replace: false });
+    } catch (error) {
+      console.error('Navigation error:', error);
+      // Fallback to direct URL change
+      window.location.href = `/${pageId}`;
+    }
   }, [navigate]);
 
-  const handleLogoutWithConfirmation = useCallback(async () => {
-    if (window.confirm('Are you sure you want to sign out?')) {
-      await onLogout();
-    }
+  /**
+   * Handle logout without confirmation (as requested)
+   */
+  const handleDirectLogout = useCallback(async () => {
+    await onLogout();
   }, [onLogout]);
 
   return (
     <ErrorBoundary>
       <div className="flex h-screen bg-gray-50">
+        {/* Sidebar */}
         <div className="w-64 flex-shrink-0 bg-white shadow-sm">
-          <Suspense fallback={<div className="p-4"><LoadingSpinner size="sm" /></div>}>
+          <Suspense 
+            fallback={
+              <div className="p-4 flex items-center justify-center">
+                <LoadingSpinner size="sm" />
+              </div>
+            }
+          >
             <Sidebar
               activePage={getCurrentPage()}
               onPageChange={handlePageChange}
               currentUser={currentUser}
-              onLogout={handleLogoutWithConfirmation}
+              onLogout={handleDirectLogout}
             />
           </Suspense>
         </div>
+        
+        {/* Main Content */}
         <main className="flex-1 overflow-y-auto">
-          <Suspense fallback={<div className="p-8"><LoadingSpinner /></div>}>
+          <Suspense 
+            fallback={
+              <div className="p-8 flex items-center justify-center">
+                <LoadingSpinner />
+                <span className="ml-3 text-slate-600">Loading page...</span>
+              </div>
+            }
+          >
             {children}
           </Suspense>
         </main>
@@ -154,20 +305,31 @@ const Layout = React.memo(({ currentUser, onLogout, children }) => {
 
 Layout.displayName = 'Layout';
 
-// Enhanced email confirmation handler with better error recovery
+// ============================================================================
+// EMAIL CONFIRMATION HANDLER
+// ============================================================================
+
+/**
+ * Enhanced email confirmation handler with better error recovery
+ */
 function EmailConfirmationHandler() {
   const [state, setState] = useState({
     confirming: true,
     error: null,
     countdown: 0
   });
+  
   const navigate = useNavigate();
   const location = useLocation();
   const timeoutRef = useRef();
+  const mountedRef = useRef(true);
 
   useEffect(() => {
-    let isMounted = true;
+    mountedRef.current = true;
 
+    /**
+     * Handle email confirmation process
+     */
     const handleEmailConfirmation = async () => {
       try {
         const urlParams = new URLSearchParams(location.search);
@@ -181,99 +343,123 @@ function EmailConfirmationHandler() {
           throw createError('Invalid confirmation link', 'INVALID_CONFIRMATION_LINK');
         }
 
-        // Use retry mechanism for session establishment
-        const sessionResult = await withRetry(async () => {
-          return await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken
-          });
-        });
+        // Set session with timeout
+        const sessionResult = await withTimeout(
+          withRetry(async () => {
+            return await supabase.auth.setSession({
+              access_token: accessToken,
+              refresh_token: refreshToken
+            });
+          }),
+          CONFIG.PROFILE_FETCH_TIMEOUT
+        );
 
         const { data: { session }, error: sessionError } = sessionResult;
 
         if (sessionError) throw sessionError;
-        if (!session?.user) throw createError('Failed to establish session', 'SESSION_ESTABLISHMENT_FAILED');
+        if (!session?.user) {
+          throw createError('Failed to establish session', 'SESSION_ESTABLISHMENT_FAILED');
+        }
 
-        if (isMounted) {
-          // Update cache immediately
-          sessionCache.setMultiple({
-            user: session.user,
-            lastFetch: Date.now(),
-            lastRefresh: Date.now(),
-            isValid: true
-          });
+        if (!mountedRef.current) return;
 
-          // Ensure profile exists
-          await withRetry(async () => {
+        // Update cache immediately
+        sessionCache.setMultiple({
+          user: session.user,
+          lastFetch: Date.now(),
+          lastRefresh: Date.now(),
+          isValid: true
+        });
+
+        // Ensure profile exists with timeout
+        await withTimeout(
+          withRetry(async () => {
             const { data: profile } = await supabase
               .from('profiles')
-              .select('id')
+              .select('id, name, avatar_url')
               .eq('id', session.user.id)
               .maybeSingle();
 
             if (!profile) {
               const newProfile = {
                 id: session.user.id,
-                name: session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'User',
+                name: session.user.user_metadata?.name || 
+                      session.user.email?.split('@')[0] || 
+                      'User',
                 email: session.user.email,
                 created_at: new Date().toISOString(),
               };
 
-              await supabase.from('profiles').insert([newProfile]);
+              const { error: insertError } = await supabase
+                .from('profiles')
+                .insert([newProfile]);
+
+              if (insertError) throw insertError;
               sessionCache.set('profile', newProfile);
             } else {
               sessionCache.set('profile', profile);
             }
-          });
+          }),
+          CONFIG.PROFILE_FETCH_TIMEOUT
+        );
 
-          navigate('/dashboard', { replace: true });
-        }
+        // Navigate to dashboard
+        navigate('/dashboard', { replace: true });
+
       } catch (error) {
         console.error('Email confirmation error:', error);
 
-        if (isMounted) {
-          setState(prev => ({ ...prev, error: error.message, confirming: false }));
+        if (!mountedRef.current) return;
 
-          // Enhanced countdown with user feedback
-          let countdown = 5;
-          setState(prev => ({ ...prev, countdown }));
+        setState(prev => ({ 
+          ...prev, 
+          error: error.message, 
+          confirming: false 
+        }));
 
-          const countdownInterval = setInterval(() => {
-            countdown--;
-            if (isMounted) {
-              setState(prev => ({ ...prev, countdown }));
+        // Start countdown for redirect
+        let countdown = 5;
+        setState(prev => ({ ...prev, countdown }));
 
-              if (countdown <= 0) {
-                clearInterval(countdownInterval);
-                navigate('/login', {
-                  state: {
-                    message: error.code === 'INVALID_CONFIRMATION_LINK'
-                      ? 'Invalid confirmation link. Please try signing up again.'
-                      : 'Email confirmed! Please sign in to continue.',
-                    type: error.code === 'INVALID_CONFIRMATION_LINK' ? 'error' : 'success'
-                  },
-                  replace: true
-                });
-              }
-            } else {
+        const countdownInterval = setInterval(() => {
+          countdown--;
+          if (mountedRef.current) {
+            setState(prev => ({ ...prev, countdown }));
+
+            if (countdown <= 0) {
               clearInterval(countdownInterval);
+              navigate('/login', {
+                state: {
+                  message: error.code === 'INVALID_CONFIRMATION_LINK'
+                    ? 'Invalid confirmation link. Please try signing up again.'
+                    : 'Email confirmed! Please sign in to continue.',
+                  type: error.code === 'INVALID_CONFIRMATION_LINK' ? 'error' : 'success'
+                },
+                replace: true
+              });
             }
-          }, 1000);
+          } else {
+            clearInterval(countdownInterval);
+          }
+        }, 1000);
 
-          timeoutRef.current = countdownInterval;
-        }
+        timeoutRef.current = countdownInterval;
       }
     };
 
+    // Start confirmation process after brief delay
     const initTimeoutId = setTimeout(handleEmailConfirmation, 500);
 
     return () => {
-      isMounted = false;
+      mountedRef.current = false;
       clearTimeout(initTimeoutId);
-      if (timeoutRef.current) clearInterval(timeoutRef.current);
+      if (timeoutRef.current) {
+        clearInterval(timeoutRef.current);
+      }
     };
   }, [navigate, location.search, location.hash]);
 
+  // Render confirming state
   if (state.confirming) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-white to-blue-50/20">
@@ -286,6 +472,7 @@ function EmailConfirmationHandler() {
     );
   }
 
+  // Render error state
   if (state.error) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-white to-blue-50/20">
@@ -299,8 +486,8 @@ function EmailConfirmationHandler() {
             Redirecting in {state.countdown} seconds...
           </p>
           <button
-            onClick={() => window.location.href = '/login'}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            onClick={() => navigate('/login')}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
           >
             Go to Login Now
           </button>
@@ -312,26 +499,40 @@ function EmailConfirmationHandler() {
   return null;
 }
 
-// Enhanced activity tracker hook
+// ============================================================================
+// ACTIVITY TRACKING HOOK
+// ============================================================================
+
+/**
+ * Enhanced activity tracker hook with better performance
+ */
 const useActivityTracker = (onInactivity, isEnabled) => {
   const lastActivityRef = useRef(Date.now());
   const throttleTimerRef = useRef(null);
-  const inactivityTimerRef = useRef(null);
+  const checkIntervalRef = useRef(null);
 
+  /**
+   * Update last activity timestamp (throttled)
+   */
   const updateActivity = useCallback(() => {
     if (throttleTimerRef.current) return;
 
     throttleTimerRef.current = setTimeout(() => {
       lastActivityRef.current = Date.now();
+      sessionCache.set('lastActivity', Date.now());
       throttleTimerRef.current = null;
-    }, ACTIVITY_THROTTLE);
+    }, CONFIG.ACTIVITY_THROTTLE);
   }, []);
 
+  /**
+   * Check for user inactivity
+   */
   const checkInactivity = useCallback(() => {
     if (!isEnabled) return;
 
     const inactive = Date.now() - lastActivityRef.current;
-    if (inactive > INACTIVITY_TIMEOUT) {
+    if (inactive > CONFIG.INACTIVITY_TIMEOUT) {
+      console.log('User inactive for', inactive, 'ms, triggering logout');
       onInactivity();
     }
   }, [onInactivity, isEnabled]);
@@ -339,62 +540,127 @@ const useActivityTracker = (onInactivity, isEnabled) => {
   useEffect(() => {
     if (!isEnabled) return;
 
+    // Activity event listeners
     const events = ["mousemove", "keydown", "click", "scroll", "touchstart"];
-    events.forEach((e) => window.addEventListener(e, updateActivity, { passive: true }));
+    events.forEach((event) => {
+      window.addEventListener(event, updateActivity, { passive: true });
+    });
 
-    const interval = setInterval(checkInactivity, INACTIVITY_CHECK_INTERVAL);
+    // Inactivity check interval
+    checkIntervalRef.current = setInterval(checkInactivity, CONFIG.INACTIVITY_CHECK_INTERVAL);
 
     return () => {
-      events.forEach((e) => window.removeEventListener(e, updateActivity));
-      clearInterval(interval);
-      if (throttleTimerRef.current) clearTimeout(throttleTimerRef.current);
-      if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+      // Cleanup event listeners
+      events.forEach((event) => {
+        window.removeEventListener(event, updateActivity);
+      });
+      
+      // Cleanup timers
+      if (checkIntervalRef.current) {
+        clearInterval(checkIntervalRef.current);
+      }
+      if (throttleTimerRef.current) {
+        clearTimeout(throttleTimerRef.current);
+      }
     };
   }, [updateActivity, checkInactivity, isEnabled]);
 
   return lastActivityRef.current;
 };
 
+// ============================================================================
+// MAIN APP COMPONENT
+// ============================================================================
+
 export default function App() {
+  // ========================================================================
+  // STATE AND REFS
+  // ========================================================================
+  
   const [currentUser, setCurrentUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [sessionChecking, setSessionChecking] = useState(false);
   const [error, setError] = useState(null);
+  
+  // Refs for cleanup and operation management
   const authSubscriptionRef = useRef(null);
   const componentMountedRef = useRef(true);
+  const sessionRefreshIntervalRef = useRef(null);
+  const timeoutRefs = useRef(new Set());
 
-  // Enhanced profile fetching with better error handling
+  // ========================================================================
+  // UTILITY FUNCTIONS
+  // ========================================================================
+
+  /**
+   * Safe setTimeout that tracks IDs for cleanup
+   */
+  const safeSetTimeout = useCallback((callback, delay) => {
+    const timeoutId = setTimeout(() => {
+      timeoutRefs.current.delete(timeoutId);
+      callback();
+    }, delay);
+    
+    timeoutRefs.current.add(timeoutId);
+    return timeoutId;
+  }, []);
+
+  /**
+   * Cleanup all pending timeouts
+   */
+  const cleanupTimeouts = useCallback(() => {
+    timeoutRefs.current.forEach(timeoutId => clearTimeout(timeoutId));
+    timeoutRefs.current.clear();
+  }, []);
+
+  // ========================================================================
+  // PROFILE MANAGEMENT
+  // ========================================================================
+
+  /**
+   * Enhanced profile fetching with timeout and better error handling
+   */
   const fetchUserProfile = useCallback(async (user, forceRefresh = false) => {
-    try {
-      // Use cached profile if available and valid
-      if (!forceRefresh && !sessionCache.isExpired() && sessionCache.get('profile') && sessionCache.get('user')?.id === user.id) {
-        const profile = sessionCache.get('profile');
-        const userName = profile.name ||
-          user.user_metadata?.full_name ||
-          user.user_metadata?.name ||
-          user.email?.split("@")[0] ||
-          "User";
+    if (!user?.id || !componentMountedRef.current) return;
 
-        setCurrentUser({
-          id: user.id,
-          email: user.email,
-          name: userName,
-          avatar: profile.avatar_url || null,
-        });
-        return;
-      }
+    // Check if we can use cached data
+    if (!forceRefresh && !sessionCache.isUserStale(user.id)) {
+      const profile = sessionCache.get('profile');
+      const userName = profile?.name ||
+        user.user_metadata?.full_name ||
+        user.user_metadata?.name ||
+        user.email?.split("@")[0] ||
+        "User";
 
-      // Fetch fresh profile data with retry
-      const profileData = await withRetry(async () => {
-        const { data, error } = await supabase
-          .from("profiles")
-          .select("name, avatar_url")
-          .eq("id", user.id)
-          .maybeSingle();
-
-        if (error) throw error;
-        return data;
+      setCurrentUser({
+        id: user.id,
+        email: user.email,
+        name: userName,
+        avatar: profile?.avatar_url || null,
       });
+      return;
+    }
+
+    // Acquire lock to prevent concurrent profile fetches
+    if (!sessionCache.acquireLock('profileFetch')) {
+      return; // Another fetch is already in progress
+    }
+
+    try {
+      // Fetch profile data with timeout and retry
+      const profileData = await withTimeout(
+        withRetry(async () => {
+          const { data, error } = await supabase
+            .from("profiles")
+            .select("name, avatar_url")
+            .eq("id", user.id)
+            .maybeSingle();
+
+          if (error) throw error;
+          return data;
+        }),
+        CONFIG.PROFILE_FETCH_TIMEOUT
+      );
 
       const userName = profileData?.name ||
         user.user_metadata?.full_name ||
@@ -421,23 +687,114 @@ export default function App() {
         setCurrentUser(userObj);
         setError(null);
       }
+
     } catch (err) {
       console.error("Failed to fetch profile:", err);
 
-      // Fallback without caching on error
+      // Fallback user object
+      const fallbackUser = {
+        id: user.id,
+        email: user.email,
+        name: user.user_metadata?.full_name || 
+              user.email?.split("@")[0] || 
+              "User",
+        avatar: null,
+      };
+
       if (componentMountedRef.current) {
-        setCurrentUser({
-          id: user.id,
-          email: user.email,
-          name: user.user_metadata?.full_name || user.email?.split("@")[0] || "User",
-          avatar: null,
-        });
-        setError(err.message);
+        setCurrentUser(fallbackUser);
+        
+        // Only show error for critical failures, not timeouts
+        if (err.code !== 'TIMEOUT') {
+          setError('Failed to load profile. Some features may be limited.');
+        }
       }
+    } finally {
+      sessionCache.releaseLock('profileFetch');
     }
   }, []);
 
-  // Enhanced logout with better cleanup
+  // ========================================================================
+  // SESSION MANAGEMENT
+  // ========================================================================
+
+  /**
+   * Debounced session check to prevent rapid consecutive calls
+   */
+  const checkSession = useMemo(
+    () => debounce(async (forceRefresh = false) => {
+      if (!componentMountedRef.current || sessionCache.isLocked('sessionCheck')) {
+        return;
+      }
+
+      // Acquire lock
+      if (!sessionCache.acquireLock('sessionCheck')) {
+        return;
+      }
+
+      try {
+        setSessionChecking(true);
+
+        // Use cached session if valid and not forcing refresh
+        if (!forceRefresh && !sessionCache.isExpired()) {
+          const cachedUser = sessionCache.get('user');
+          if (cachedUser) {
+            await fetchUserProfile(cachedUser);
+            return;
+          }
+        }
+
+        // Fetch fresh session
+        const sessionData = await withTimeout(
+          withRetry(async () => {
+            const { data, error } = await supabase.auth.getSession();
+            if (error) throw error;
+            return data;
+          }),
+          CONFIG.PROFILE_FETCH_TIMEOUT
+        );
+
+        if (sessionData.session?.user) {
+          await fetchUserProfile(sessionData.session.user);
+        } else {
+          sessionCache.clear();
+          if (componentMountedRef.current) {
+            setCurrentUser(null);
+          }
+        }
+
+      } catch (err) {
+        console.error("Session check error:", err);
+        
+        // Clear cache and state on session errors
+        sessionCache.clear();
+        
+        if (componentMountedRef.current) {
+          setCurrentUser(null);
+          
+          // Show error only for non-timeout failures
+          if (err.code !== 'TIMEOUT') {
+            setError('Session expired. Please sign in again.');
+          }
+        }
+      } finally {
+        sessionCache.releaseLock('sessionCheck');
+        
+        if (componentMountedRef.current) {
+          setSessionChecking(false);
+        }
+      }
+    }, CONFIG.SESSION_CHECK_DEBOUNCE),
+    [fetchUserProfile]
+  );
+
+  // ========================================================================
+  // LOGOUT FUNCTIONALITY
+  // ========================================================================
+
+  /**
+   * Enhanced logout with better cleanup (no confirmation as requested)
+   */
   const handleLogout = useCallback(async () => {
     try {
       // Clear cache and state immediately
@@ -453,94 +810,82 @@ export default function App() {
 
     } catch (err) {
       console.error("Logout failed:", err);
+      
       // Even if logout fails, clear local state
       sessionCache.clear();
       setCurrentUser(null);
     }
   }, []);
 
-  // Enhanced inactivity handler
+  // ========================================================================
+  // INACTIVITY HANDLING
+  // ========================================================================
+
+  /**
+   * Handle user inactivity with better UX
+   */
   const handleInactivity = useCallback(() => {
+    console.log('User inactivity detected, logging out...');
     handleLogout();
-    // Show a more user-friendly notification
+    
+    // Show user-friendly notification if supported
     if ('Notification' in window && Notification.permission === 'granted') {
       new Notification('Session Expired', {
         body: 'You have been logged out due to inactivity.',
         icon: '/favicon.ico'
       });
-    } else {
-      alert("You have been logged out due to inactivity.");
     }
+    
+    // Set a user-friendly error message
+    setError('You have been logged out due to inactivity.');
   }, [handleLogout]);
 
-  // Use the enhanced activity tracker
+  // Use activity tracker
   useActivityTracker(handleInactivity, !!currentUser);
 
-  // Enhanced session checking with better error handling - REMOVED TO PREVENT LOOPS
-  // This function is now inlined where needed to prevent dependency issues
+  // ========================================================================
+  // PROFILE REFRESH
+  // ========================================================================
 
-  // Page visibility handling for session refresh - FIXED DEPENDENCIES
+  /**
+   * Refresh user profile data
+   */
+  const refreshUserData = useCallback(async () => {
+    if (currentUser?.id) {
+      await fetchUserProfile({ 
+        id: currentUser.id, 
+        email: currentUser.email 
+      }, true);
+    }
+  }, [currentUser?.id, currentUser?.email, fetchUserProfile]);
+
+  // ========================================================================
+  // EFFECTS
+  // ========================================================================
+
+  /**
+   * Page visibility handling for session refresh
+   */
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (!document.hidden && currentUser) {
-        // Inline session check to avoid dependency issues
-        if (sessionChecking) return;
-
-        const checkSessionOnVisibility = async () => {
-          try {
-            setSessionChecking(true);
-
-            // Use cached session if valid
-            if (!sessionCache.isExpired() && sessionCache.get('user')) {
-              const cachedUser = sessionCache.get('user');
-              await fetchUserProfile(cachedUser);
-              return;
-            }
-
-            // Fetch fresh session
-            const sessionData = await withRetry(async () => {
-              const { data, error } = await supabase.auth.getSession();
-              if (error) throw error;
-              return data;
-            });
-
-            if (sessionData.session?.user) {
-              await fetchUserProfile(sessionData.session.user);
-            } else {
-              sessionCache.clear();
-              if (componentMountedRef.current) {
-                setCurrentUser(null);
-              }
-            }
-          } catch (err) {
-            console.error("Session check error:", err);
-            sessionCache.clear();
-            if (componentMountedRef.current) {
-              setCurrentUser(null);
-              setError(err.message);
-            }
-          } finally {
-            if (componentMountedRef.current) {
-              setSessionChecking(false);
-            }
-          }
-        };
-
-        checkSessionOnVisibility();
+      if (!document.hidden && currentUser && !sessionChecking) {
+        checkSession(false);
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [currentUser, sessionChecking]); // Only depend on currentUser and sessionChecking
+  }, [currentUser, sessionChecking, checkSession]);
 
-  // Enhanced session refresh logic
+  /**
+   * Session refresh interval
+   */
   useEffect(() => {
     if (!currentUser) return;
 
-    const interval = setInterval(async () => {
+    sessionRefreshIntervalRef.current = setInterval(async () => {
       const lastRefresh = sessionCache.get('lastRefresh') || 0;
-      const shouldRefresh = Date.now() - lastRefresh > SESSION_REFRESH_THRESHOLD;
+      const shouldRefresh = Date.now() - lastRefresh > CONFIG.SESSION_REFRESH_THRESHOLD;
 
       if (shouldRefresh) {
         try {
@@ -552,59 +897,28 @@ export default function App() {
           console.error('Session refresh failed:', err);
         }
       }
-    }, SESSION_REFRESH_THRESHOLD);
+    }, CONFIG.SESSION_REFRESH_THRESHOLD);
 
-    return () => clearInterval(interval);
+    return () => {
+      if (sessionRefreshIntervalRef.current) {
+        clearInterval(sessionRefreshIntervalRef.current);
+        sessionRefreshIntervalRef.current = null;
+      }
+    };
   }, [currentUser]);
 
-  // Initialize auth with enhanced error handling - FIXED DEPENDENCIES
+  /**
+   * Initialize authentication and set up listeners
+   */
   useEffect(() => {
     componentMountedRef.current = true;
 
     const initializeAuth = async () => {
       try {
-        // Call checkSession directly without dependencies
-        if (sessionChecking) return;
+        // Initial session check
+        await checkSession(false);
 
-        try {
-          setSessionChecking(true);
-
-          // Use cached session if valid
-          if (!sessionCache.isExpired() && sessionCache.get('user')) {
-            const cachedUser = sessionCache.get('user');
-            await fetchUserProfile(cachedUser);
-            return;
-          }
-
-          // Fetch fresh session with retry
-          const sessionData = await withRetry(async () => {
-            const { data, error } = await supabase.auth.getSession();
-            if (error) throw error;
-            return data;
-          });
-
-          if (sessionData.session?.user) {
-            await fetchUserProfile(sessionData.session.user);
-          } else {
-            sessionCache.clear();
-            if (componentMountedRef.current) {
-              setCurrentUser(null);
-            }
-          }
-        } catch (err) {
-          console.error("Session check error:", err);
-          sessionCache.clear();
-          if (componentMountedRef.current) {
-            setCurrentUser(null);
-            setError(err.message);
-          }
-        } finally {
-          if (componentMountedRef.current) {
-            setSessionChecking(false);
-          }
-        }
-
-        // Set up auth listener with better event handling
+        // Set up auth state listener
         const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
           if (!componentMountedRef.current) return;
 
@@ -629,8 +943,9 @@ export default function App() {
               case 'TOKEN_REFRESHED':
                 if (session?.user) {
                   sessionCache.set('lastRefresh', Date.now());
-                  // Only fetch profile if user changed or we don't have current user
-                  const currentUserId = componentMountedRef.current ? currentUser?.id : null;
+                  
+                  // Only fetch profile if user changed
+                  const currentUserId = currentUser?.id;
                   if (!currentUserId || currentUserId !== session.user.id) {
                     await fetchUserProfile(session.user);
                   }
@@ -638,27 +953,25 @@ export default function App() {
                 break;
 
               case 'USER_UPDATED':
-                if (session?.user) {
-                  const currentUserId = componentMountedRef.current ? currentUser?.id : null;
-                  if (currentUserId === session.user.id) {
-                    await fetchUserProfile(session.user, true);
-                  }
+                if (session?.user && session.user.id === currentUser?.id) {
+                  await fetchUserProfile(session.user, true);
                 }
                 break;
             }
           } catch (err) {
             console.error('Auth state change error:', err);
             if (componentMountedRef.current) {
-              setError(err.message);
+              setError('Authentication error occurred.');
             }
           }
         });
 
         authSubscriptionRef.current = data.subscription;
+
       } catch (err) {
-        console.error("Auth init error:", err);
+        console.error("Auth initialization error:", err);
         if (componentMountedRef.current) {
-          setError(err.message);
+          setError('Failed to initialize authentication.');
         }
       } finally {
         if (componentMountedRef.current) {
@@ -672,61 +985,23 @@ export default function App() {
     return () => {
       componentMountedRef.current = false;
       authSubscriptionRef.current?.unsubscribe();
-    };
-  }, []); // Empty dependency array - only run once on mount
-
-  const refreshUserData = useCallback(async () => {
-    if (currentUser) {
-      // Inline to avoid circular dependencies
-      try {
-        // Fetch fresh profile data with retry
-        const profileData = await withRetry(async () => {
-          const { data, error } = await supabase
-            .from("profiles")
-            .select("name, avatar_url")
-            .eq("id", currentUser.id)
-            .maybeSingle();
-
-          if (error) throw error;
-          return data;
-        });
-
-        const userName = profileData?.name ||
-          currentUser.name ||
-          currentUser.email?.split("@")[0] ||
-          "User";
-
-        const userObj = {
-          id: currentUser.id,
-          email: currentUser.email,
-          name: userName,
-          avatar: profileData?.avatar_url || null,
-        };
-
-        // Update cache
-        sessionCache.setMultiple({
-          user: { ...currentUser },
-          profile: profileData || { name: userName },
-          lastFetch: Date.now(),
-          isValid: true
-        });
-
-        if (componentMountedRef.current) {
-          setCurrentUser(userObj);
-          setError(null);
-        }
-      } catch (err) {
-        console.error("Failed to refresh profile:", err);
-        if (componentMountedRef.current) {
-          setError(err.message);
-        }
+      cleanupTimeouts();
+      if (sessionRefreshIntervalRef.current) {
+        clearInterval(sessionRefreshIntervalRef.current);
       }
-    }
-  }, [currentUser]); // Only depend on currentUser
+    };
+  }, []); // Empty dependency array - only run on mount
 
-  // Memoized routes with enhanced error boundaries
+  // ========================================================================
+  // RENDER HELPERS
+  // ========================================================================
+
+  /**
+   * Memoized routes with enhanced error boundaries
+   */
   const routes = useMemo(() => (
     <Routes>
+      {/* Public routes */}
       <Route
         path="/login"
         element={currentUser ? <Navigate to="/dashboard" replace /> : <LoginPage />}
@@ -740,13 +1015,19 @@ export default function App() {
         element={<EmailConfirmationHandler />}
       />
 
+      {/* Protected routes */}
       {currentUser ? (
         <>
           <Route
             path="/dashboard"
             element={
               <Layout currentUser={currentUser} onLogout={handleLogout}>
-                <DashboardPage currentUser={currentUser} />
+                <DashboardPage 
+                  currentUser={currentUser} 
+                  onAuthStateChange={(session, user) => {
+                    if (user) fetchUserProfile(user);
+                  }}
+                />
               </Layout>
             }
           />
@@ -754,7 +1035,12 @@ export default function App() {
             path="/workspace"
             element={
               <Layout currentUser={currentUser} onLogout={handleLogout}>
-                <WorkspacePage currentUser={currentUser} />
+                <WorkspacePage 
+                  currentUser={currentUser}
+                  onAuthStateChange={(session, user) => {
+                    if (user) fetchUserProfile(user);
+                  }}
+                />
               </Layout>
             }
           />
@@ -762,7 +1048,12 @@ export default function App() {
             path="/tasks"
             element={
               <Layout currentUser={currentUser} onLogout={handleLogout}>
-                <TasksPage currentUser={currentUser} />
+                <TasksPage 
+                  currentUser={currentUser}
+                  onAuthStateChange={(session, user) => {
+                    if (user) fetchUserProfile(user);
+                  }}
+                />
               </Layout>
             }
           />
@@ -770,7 +1061,10 @@ export default function App() {
             path="/settings"
             element={
               <Layout currentUser={currentUser} onLogout={handleLogout}>
-                <ProfilePage currentUser={currentUser} onProfileUpdate={refreshUserData} />
+                <ProfilePage 
+                  currentUser={currentUser} 
+                  onProfileUpdate={refreshUserData} 
+                />
               </Layout>
             }
           />
@@ -781,30 +1075,57 @@ export default function App() {
         <Route path="*" element={<Navigate to="/login" replace />} />
       )}
     </Routes>
-  ), [currentUser, handleLogout, refreshUserData]);
+  ), [currentUser, handleLogout, fetchUserProfile, refreshUserData]);
 
-  if (loading || sessionChecking) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-white to-blue-50/20">
-        <div className="text-center">
-          <LoadingSpinner />
-          <p className="mt-4 text-slate-600 font-medium">Loading Taskie...</p>
-          {error && (
-            <p className="mt-2 text-red-500 text-sm">Experiencing connection issues...</p>
-          )}
-        </div>
+  /**
+   * Loading screen component
+   */
+  const LoadingScreen = useMemo(() => (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-white to-blue-50/20">
+      <div className="text-center">
+        <LoadingSpinner />
+        <p className="mt-4 text-slate-600 font-medium">Loading Taskie...</p>
+        {error && (
+          <div className="mt-4 p-3 bg-red-50 rounded-lg border border-red-200 max-w-sm mx-auto">
+            <p className="text-red-700 text-sm">{error}</p>
+            <button
+              onClick={() => checkSession(true)}
+              disabled={sessionChecking}
+              className="mt-2 px-3 py-1 bg-red-600 text-white rounded text-sm hover:bg-red-700 transition-colors disabled:opacity-50"
+            >
+              Retry
+            </button>
+          </div>
+        )}
       </div>
-    );
+    </div>
+  ), [error, sessionChecking, checkSession]);
+
+  /**
+   * Suspense fallback component
+   */
+  const SuspenseFallback = useMemo(() => (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-white to-blue-50/20">
+      <div className="flex items-center space-x-3">
+        <LoadingSpinner />
+        <span className="text-slate-600 font-medium">Loading...</span>
+      </div>
+    </div>
+  ), []);
+
+  // ========================================================================
+  // RENDER
+  // ========================================================================
+
+  // Show loading screen during initial load
+  if (loading || sessionChecking) {
+    return LoadingScreen;
   }
 
   return (
     <ErrorBoundary>
       <Router>
-        <Suspense fallback={
-          <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-white to-blue-50/20">
-            <LoadingSpinner />
-          </div>
-        }>
+        <Suspense fallback={SuspenseFallback}>
           {routes}
         </Suspense>
       </Router>
