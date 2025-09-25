@@ -455,18 +455,18 @@ export default function App() {
             }
           />
           <Route
-            path="/tasks"
-            element={
-              <Layout currentUser={currentUser} onLogout={handleLogout}>
-                <TasksPage currentUser={currentUser} />
-              </Layout>
-            }
-          />
-          <Route
             path="/workspace"
             element={
               <Layout currentUser={currentUser} onLogout={handleLogout}>
                 <WorkspacePage currentUser={currentUser} />
+              </Layout>
+            }
+          />
+          <Route
+            path="/tasks"
+            element={
+              <Layout currentUser={currentUser} onLogout={handleLogout}>
+                <TasksPage currentUser={currentUser} />
               </Layout>
             }
           />
@@ -479,6 +479,8 @@ export default function App() {
             }
           />
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          {/* Redirect any unknown routes to dashboard for authenticated users */}
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </>
       ) : (
         <Route path="*" element={<Navigate to="/login" replace />} />

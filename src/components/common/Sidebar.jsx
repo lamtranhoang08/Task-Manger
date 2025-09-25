@@ -2,25 +2,16 @@
 import React from "react";
 import {
   LayoutDashboard,
-  Users,
+  Briefcase,
   CheckSquare,
   Settings,
-  Timer,
-  MessageSquare,
-  Newspaper,
   LogOut,
-  Briefcase,
 } from "lucide-react";
 
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "workspace", label: "Workspace", icon: Briefcase },
   { id: "tasks", label: "Tasks", icon: CheckSquare },
-  { id: "users", label: "Team", icon: Users },
-  { id: "meetings", label: "Meetings", icon: Users },
-  { id: "timesheets", label: "Timesheets", icon: Timer },
-  { id: "chat", label: "Messages", icon: MessageSquare },
-  { id: "reports", label: "Reports", icon: Newspaper },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
