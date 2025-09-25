@@ -1,5 +1,5 @@
-// src/pages/TasksPage.jsx - Modernized
-import React, { useState, useEffect } from "react";
+// src/pages/TasksPage.jsx - Optimized with Better Session Handling
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useLocation } from 'react-router-dom';
 import TaskBoard from "../components/tasks/TaskBoard";
 import { supabase } from '../lib/supabase';
@@ -13,7 +13,7 @@ const statusMap = {
   "complete": "completed"
 };
 
-export default function TasksPage() {
+export default function TasksPage({ currentUser }) {
   const location = useLocation();
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -23,6 +23,10 @@ export default function TasksPage() {
   const [selectedProject, setSelectedProject] = useState("");
   const [availableProjects, setAvailableProjects] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [error, setError] = useState(null);
+
+  // Get user ID from currentUser prop instead of repeated API calls
+  const userId = currentUser?.id;
 
   // Check if we should open the add modal from navigation state
   useEffect(() => {
@@ -32,24 +36,17 @@ export default function TasksPage() {
     }
   }, [location.state]);
 
-  useEffect(() => {
-    loadTasks();
-    loadAvailableProjects();
-  }, []);
+  // Memoized function to load projects
+  const loadAvailableProjects = useCallback(async () => {
+    if (!userId) return;
 
-  useEffect(() => {
-    loadTasks();
-  }, [filterMode, selectedProject]);
-
-  async function loadAvailableProjects() {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
-      const { data: membershipData } = await supabase
+      const { data: membershipData, error: membershipError } = await supabase
         .from('project_members')
         .select('project_id')
-        .eq('user_id', user.id);
+        .eq('user_id', userId);
+
+      if (membershipError) throw membershipError;
 
       if (membershipData && membershipData.length > 0) {
         const projectIds = membershipData.map(m => m.project_id);
@@ -62,66 +59,94 @@ export default function TasksPage() {
 
         if (error) throw error;
         setAvailableProjects(projects || []);
+      } else {
+        setAvailableProjects([]);
       }
     } catch (error) {
       console.error('Error loading projects:', error);
+      setError('Failed to load projects');
     }
-  }
+  }, [userId]);
 
-  async function loadTasks() {
+  // Optimized task loading with better error handling
+  const loadTasks = useCallback(async () => {
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
-    try {
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (userError) throw userError;
-      if (!user) throw new Error('No user logged in');
+    setError(null);
 
+    try {
       let query = supabase.from('task_details').select('*');
 
       switch (filterMode) {
         case "personal":
-          query = query.eq('user_id', user.id).is('project_id', null);
+          query = query.eq('user_id', userId).is('project_id', null);
           break;
         case "project":
           query = query.not('project_id', 'is', null);
           if (selectedProject) {
             query = query.eq('project_id', selectedProject);
           }
-          const { data: membershipData } = await supabase
+          
+          // Get user's project memberships
+          const { data: membershipData, error: membershipError } = await supabase
             .from('project_members')
             .select('project_id')
-            .eq('user_id', user.id);
+            .eq('user_id', userId);
+
+          if (membershipError) throw membershipError;
 
           if (membershipData && membershipData.length > 0) {
             const projectIds = membershipData.map(m => m.project_id);
             query = query.in('project_id', projectIds);
           } else {
-            query = query.eq('project_id', 'no-projects');
+            // User has no project memberships
+            setTasks([]);
+            setLoading(false);
+            return;
           }
           break;
         case "assigned":
-          query = query.eq('assigned_to', user.id);
+          query = query.eq('assigned_to', userId);
           break;
-        default:
-          query = query.or(`user_id.eq.${user.id},assigned_to.eq.${user.id}`);
+        default: // "all"
+          query = query.or(`user_id.eq.${userId},assigned_to.eq.${userId}`);
       }
 
-      const { data, error } = await query.order('created_at', { ascending: false });
+      const { data, error } = await query
+        .order('created_at', { ascending: false })
+        .limit(1000); // Add reasonable limit
 
       if (error) throw error;
       setTasks(data || []);
     } catch (err) {
       console.error("Failed to fetch tasks:", err);
+      setError('Failed to load tasks. Please try refreshing the page.');
+      setTasks([]);
     } finally {
       setLoading(false);
     }
-  }
+  }, [userId, filterMode, selectedProject]);
 
-  async function handleAdd(taskPayload) {
+  // Load data when user is available or dependencies change
+  useEffect(() => {
+    if (userId) {
+      loadTasks();
+      loadAvailableProjects();
+    }
+  }, [userId, loadTasks, loadAvailableProjects]);
+
+  // Optimized task creation with better error handling
+  const handleAdd = useCallback(async (taskPayload) => {
+    if (!userId) {
+      setError('User session expired. Please refresh the page.');
+      return;
+    }
+
     try {
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (userError) throw userError;
-      if (!user) throw new Error('No user logged in');
-
       const backendTask = {
         title: taskPayload.title,
         description: taskPayload.description || "",
@@ -131,8 +156,8 @@ export default function TasksPage() {
         start_time: taskPayload.dueDate ? new Date(taskPayload.dueDate).toISOString() : null,
         end_time: taskPayload.dueDate ? new Date(taskPayload.dueDate).toISOString() : null,
         all_day: taskPayload.allDay || false,
-        user_id: user.id,
-        created_by: user.id,
+        user_id: userId,
+        created_by: userId,
         project_id: taskPayload.projectId || null,
         assigned_to: taskPayload.assignedTo || null
       };
@@ -145,38 +170,54 @@ export default function TasksPage() {
 
       if (error) throw error;
 
-      loadTasks();
+      // Add new task to local state instead of reloading all tasks
+      const newDisplayTask = {
+        ...data,
+        displayStatus: data.status === "pending" ? "todo" :
+          data.status === "in-progress" ? "progress" : "complete",
+        dueDate: data.due_date
+      };
+
+      setTasks(prev => [newDisplayTask, ...prev]);
       setIsAddModalOpen(false);
     } catch (err) {
       console.error("Failed to create task:", err);
+      setError('Failed to create task. Please try again.');
     }
-  }
+  }, [userId]);
 
-  async function handleDelete(id) {
+  // Optimized task deletion
+  const handleDelete = useCallback(async (id) => {
+    if (!userId) {
+      setError('User session expired. Please refresh the page.');
+      return;
+    }
+
     try {
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (userError) throw userError;
-      if (!user) throw new Error('No user logged in');
-
       const { error } = await supabase
         .from('tasks')
         .delete()
         .eq('id', id)
-        .or(`user_id.eq.${user.id},assigned_to.eq.${user.id}`);
+        .or(`user_id.eq.${userId},assigned_to.eq.${userId}`);
 
       if (error) throw error;
-      setTasks((prev) => prev.filter((t) => t.id !== id));
+      
+      // Remove from local state
+      setTasks(prev => prev.filter(t => t.id !== id));
     } catch (err) {
       console.error("Failed to delete task:", err);
+      setError('Failed to delete task. Please try again.');
     }
-  }
+  }, [userId]);
 
-  async function handleEdit(taskId, updates) {
+  // Optimized task editing
+  const handleEdit = useCallback(async (taskId, updates) => {
+    if (!userId) {
+      setError('User session expired. Please refresh the page.');
+      return;
+    }
+
     try {
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (userError) throw userError;
-      if (!user) throw new Error('No user logged in');
-
       const backendUpdates = {
         title: updates.title,
         description: updates.description,
@@ -201,62 +242,55 @@ export default function TasksPage() {
         backendUpdates.end_time = null;
       }
 
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('tasks')
         .update(backendUpdates)
         .eq('id', taskId)
-        .or(`user_id.eq.${user.id},assigned_to.eq.${user.id}`);
-      // .select()
-      // .single();
+        .or(`user_id.eq.${userId},assigned_to.eq.${userId}`);
 
       if (error) throw error;
-      // loadTasks();
-      // Update local state instead of reloading
-      setTasks(prev => prev.map(task =>
-        task.id === taskId ? { ...task, ...backendUpdates } : task
+
+      // Update local state
+      setTasks(prev => prev.map(task => 
+        task.id === taskId ? { 
+          ...task, 
+          ...backendUpdates,
+          displayStatus: backendUpdates.status === "pending" ? "todo" :
+            backendUpdates.status === "in-progress" ? "progress" : 
+            backendUpdates.status === "completed" ? "complete" : task.displayStatus,
+          dueDate: backendUpdates.due_date || task.dueDate
+        } : task
       ));
     } catch (err) {
       console.error("Failed to update task:", err);
+      setError('Failed to update task. Please try again.');
     }
-  }
+  }, [userId]);
 
-  // Filter tasks based on search query
-  const filteredTasks = tasks.filter(task =>
-    task.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    task.description?.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // Optimized status change
+  const handleStatusChange = useCallback(async (taskId, updates) => {
+    if (!userId) {
+      setError('User session expired. Please refresh the page.');
+      return;
+    }
 
-  // Transform backend tasks for frontend display
-  const displayTasks = filteredTasks.map(task => ({
-    ...task,
-    displayStatus: task.status === "pending" ? "todo" :
-      task.status === "in-progress" ? "progress" : "complete",
-    dueDate: task.due_date
-  }));
-
-  const handleStatusChange = async (taskId, updates) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('No user logged in');
-
       const backendUpdates = {
         status: updates.status === 'pending' ? 'pending' :
           updates.status === 'in-progress' ? 'in-progress' : 'completed',
         updated_at: new Date().toISOString()
       };
 
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('tasks')
         .update(backendUpdates)
         .eq('id', taskId)
-        .or(`user_id.eq.${user.id},assigned_to.eq.${user.id}`);
-      // .select()
-      // .single();
+        .or(`user_id.eq.${userId},assigned_to.eq.${userId}`);
 
       if (error) throw error;
 
-      // If update was successful, refresh the task locally
-      setTasks(prev => prev.map(task =>
+      // Update local state
+      setTasks(prev => prev.map(task => 
         task.id === taskId ? {
           ...task,
           status: backendUpdates.status,
@@ -267,21 +301,42 @@ export default function TasksPage() {
       ));
     } catch (err) {
       console.error("Failed to update task status:", err);
+      setError('Failed to update task status. Please try again.');
     }
-  };
+  }, [userId]);
 
-  // Get task statistics for display
-  const taskStats = {
-    total: displayTasks.length,
-    personal: displayTasks.filter(t => !t.project_id).length,
-    project: displayTasks.filter(t => t.project_id).length,
-    assigned: displayTasks.filter(t => t.assigned_to).length,
-    completed: displayTasks.filter(t => t.displayStatus === 'complete').length,
-    overdue: displayTasks.filter(t => {
-      if (!t.due_date) return false;
-      return new Date(t.due_date) < new Date() && t.displayStatus !== 'complete';
-    }).length
-  };
+  // Memoized filtered tasks to prevent unnecessary recalculations
+  const filteredTasks = useMemo(() => {
+    return tasks.filter(task =>
+      task.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      task.description?.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [tasks, searchQuery]);
+
+  // Memoized display tasks
+  const displayTasks = useMemo(() => {
+    return filteredTasks.map(task => ({
+      ...task,
+      displayStatus: task.status === "pending" ? "todo" :
+        task.status === "in-progress" ? "progress" : "complete",
+      dueDate: task.due_date
+    }));
+  }, [filteredTasks]);
+
+  // Memoized task statistics
+  const taskStats = useMemo(() => {
+    return {
+      total: displayTasks.length,
+      personal: displayTasks.filter(t => !t.project_id).length,
+      project: displayTasks.filter(t => t.project_id).length,
+      assigned: displayTasks.filter(t => t.assigned_to).length,
+      completed: displayTasks.filter(t => t.displayStatus === 'complete').length,
+      overdue: displayTasks.filter(t => {
+        if (!t.due_date) return false;
+        return new Date(t.due_date) < new Date() && t.displayStatus !== 'complete';
+      }).length
+    };
+  }, [displayTasks]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -302,18 +357,54 @@ export default function TasksPage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  // Error boundary for user session issues
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-white to-slate-50">
+        <div className="text-center bg-white p-8 rounded-2xl shadow-lg border border-slate-200">
+          <h2 className="text-xl font-semibold text-slate-900 mb-4">Session Required</h2>
+          <p className="text-slate-600 mb-4">Please log in to view your tasks.</p>
+          <button 
+            onClick={() => window.location.href = '/login'}
+            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            Go to Login
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
-      <div className="flex justify-center items-center h-64">
-        <LoadingSpinner />
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-white to-slate-50">
+        <div className="text-center">
+          <LoadingSpinner />
+          <p className="mt-4 text-slate-600 font-medium">Loading your tasks...</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-50">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-50 p-6">
+      {/* Error Banner */}
+      {error && (
+        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-xl">
+          <div className="flex items-center justify-between">
+            <p className="text-red-800 text-sm font-medium">{error}</p>
+            <button 
+              onClick={() => setError(null)}
+              className="text-red-600 hover:text-red-800 text-sm"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Modern Header */}
-      <div className="bg-white border-b border-slate-200 sticky top-0 z-40 backdrop-blur-sm bg-white/80">
+      <div className="bg-white border-b border-slate-200 sticky top-0 z-40 backdrop-blur-sm bg-white/80 rounded-t-xl">
         <div className="px-6 py-4">
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -441,7 +532,7 @@ export default function TasksPage() {
       </div>
 
       {/* Task Board */}
-      <div className="px-6 py-6">
+      <div className="mt-6">
         <TaskBoard
           tasks={displayTasks}
           onDelete={handleDelete}
