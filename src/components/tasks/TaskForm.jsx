@@ -1,7 +1,7 @@
-// src/components/tasks/TaskForm.jsx - Modernized
+// src/components/tasks/TaskForm.jsx - Enhanced with project context
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
-import { Calendar, User, Flag, Folder, Clock, FileText, Target } from 'lucide-react';
+import { Calendar, User, Flag, Folder, Clock, FileText, Target, CheckCircle } from 'lucide-react';
 
 const TaskForm = ({ 
   onSubmit, 
@@ -9,7 +9,8 @@ const TaskForm = ({
   initialData, 
   isEditing = false,
   preselectedProjectId = null,
-  allowProjectSelection = true 
+  allowProjectSelection = true,
+  projectContext = null // New prop for project context display
 }) => {
   const [formData, setFormData] = useState({
     title: initialData?.title || '',
@@ -29,17 +30,19 @@ const TaskForm = ({
   const [loadingMembers, setLoadingMembers] = useState(false);
 
   useEffect(() => {
-    loadAvailableProjects();
-  }, []);
+    if (allowProjectSelection) {
+      loadAvailableProjects();
+    }
+  }, [allowProjectSelection]);
 
   useEffect(() => {
-    if (formData.projectId) {
-      loadProjectMembers(formData.projectId);
+    if (formData.projectId || preselectedProjectId) {
+      loadProjectMembers(formData.projectId || preselectedProjectId);
     } else {
       setAvailableMembers([]);
       setFormData(prev => ({ ...prev, assignedTo: '' }));
     }
-  }, [formData.projectId]);
+  }, [formData.projectId, preselectedProjectId]);
 
   const loadAvailableProjects = async () => {
     setLoadingProjects(true);
@@ -148,7 +151,7 @@ const TaskForm = ({
     onSubmit({
       ...formData,
       dueDate: formData.dueDate || null,
-      projectId: formData.projectId || null,
+      projectId: formData.projectId || preselectedProjectId || null,
       assignedTo: formData.assignedTo || null
     });
   };
@@ -177,8 +180,26 @@ const TaskForm = ({
   };
 
   return (
-    <div className="max-h-[80vh] overflow-y-auto">
+    <div className="space-y-6">
       <form onSubmit={handleSubmit} className="space-y-6">
+        {/* Project Context Display (when project is preselected) */}
+        {!allowProjectSelection && projectContext && (
+          <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl">
+            <div className="flex items-center space-x-3">
+              <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                <Folder className="w-4 h-4 text-blue-600" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-blue-900">Adding task to project</p>
+                <p className="text-sm text-blue-700">{projectContext.name}</p>
+              </div>
+              <div className="ml-auto">
+                <CheckCircle className="w-5 h-5 text-blue-600" />
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Title Field */}
         <div className="space-y-2">
           <label htmlFor="title" className="flex items-center text-sm font-semibold text-slate-900">
@@ -274,7 +295,7 @@ const TaskForm = ({
           </div>
         </div>
 
-        {/* Project Assignment */}
+        {/* Project Assignment (only show when allowed) */}
         {allowProjectSelection && (
           <div className="space-y-2">
             <label htmlFor="projectId" className="flex items-center text-sm font-semibold text-slate-900">
@@ -308,7 +329,7 @@ const TaskForm = ({
         )}
 
         {/* Member Assignment */}
-        {formData.projectId && (
+        {(formData.projectId || preselectedProjectId) && (
           <div className="space-y-2">
             <label htmlFor="assignedTo" className="flex items-center text-sm font-semibold text-slate-900">
               <User className="w-4 h-4 mr-2 text-slate-500" />
@@ -332,7 +353,7 @@ const TaskForm = ({
             {loadingMembers && (
               <p className="text-sm text-slate-500">Loading team members...</p>
             )}
-            {availableMembers.length === 0 && !loadingMembers && formData.projectId && (
+            {availableMembers.length === 0 && !loadingMembers && (formData.projectId || preselectedProjectId) && (
               <p className="text-sm text-orange-600 bg-orange-50 rounded-lg px-3 py-2">
                 No team members found for this project
               </p>

@@ -420,13 +420,17 @@ const ProjectCard = ({ project, onEdit, onDelete, onTaskCreated }) => {
                 </button>
             </div>
 
-            {/* Task modal */}
+            {/* Enhanced Task modal with project context */}
             <TaskModal
                 open={isTaskModalOpen}
                 onClose={() => setIsTaskModalOpen(false)}
                 onSubmit={handleAddTask}
                 initialData={{ projectId: project.id }}
                 isEditing={false}
+                projectContext={{
+                    id: project.id,
+                    name: project.name
+                }}
             />
 
             {/* Preview Modal */}
