@@ -1,7 +1,11 @@
 // src/components/TaskItem.jsx
-import React from "react";
+import React, { useState } from "react";
+import { Trash2, AlertTriangle } from "lucide-react";
 
 export default function TaskItem({ task, onEdit, onDelete }) {
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  
   if (!task) {
     return null;
   }
@@ -24,6 +28,32 @@ export default function TaskItem({ task, onEdit, onDelete }) {
     return date.toLocaleString();
   };
 
+  const handleDeleteClick = async () => {
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+    
+    setDeleting(true);
+    try {
+      const success = await onDelete(id);
+      if (!success) {
+        // Reset confirmation state on failure
+        setConfirmDelete(false);
+      }
+      // If successful, component will unmount so no need to reset state
+    } catch (error) {
+      console.error('Delete failed:', error);
+      setConfirmDelete(false);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleCancelDelete = () => {
+    setConfirmDelete(false);
+  };
+
   return (
     <li className="p-4 border rounded-lg bg-white shadow-sm flex justify-between gap-3">
       <div className="flex-1">
@@ -44,16 +74,49 @@ export default function TaskItem({ task, onEdit, onDelete }) {
       <div className="flex flex-col gap-2">
         <button
           onClick={() => onEdit(task)}
-          className="px-3 py-1 bg-yellow-500 text-white rounded hover:bg-yellow-600"
+          className="px-3 py-1 bg-yellow-500 text-white rounded hover:bg-yellow-600 disabled:opacity-50"
+          disabled={deleting}
         >
           Toggle Status
         </button>
-        <button
-          onClick={() => onDelete(id)}
-          className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600"
-        >
-          Delete
-        </button>
+        
+        {confirmDelete ? (
+          <div className="flex flex-col gap-1">
+            <button
+              onClick={handleDeleteClick}
+              disabled={deleting}
+              className="px-3 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700 disabled:opacity-50 flex items-center justify-center gap-1"
+            >
+              {deleting ? (
+                <>
+                  <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin"></div>
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <AlertTriangle className="w-3 h-3" />
+                  Confirm
+                </>
+              )}
+            </button>
+            <button
+              onClick={handleCancelDelete}
+              disabled={deleting}
+              className="px-3 py-1 bg-gray-400 text-white text-xs rounded hover:bg-gray-500 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={handleDeleteClick}
+            disabled={deleting}
+            className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 disabled:opacity-50 flex items-center justify-center gap-1"
+          >
+            <Trash2 className="w-3 h-3" />
+            Delete
+          </button>
+        )}
       </div>
     </li>
   );

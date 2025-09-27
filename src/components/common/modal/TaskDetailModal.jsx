@@ -201,15 +201,25 @@ export default function TaskDetailModal({
     
     setActionLoading(true);
     try {
-      await onDelete(task.id);
-      onClose(); // Close modal after successful deletion
+      // Call parent delete handler and wait for result
+      const success = await onDelete(task.id);
+      
+      if (success) {
+        // Only close modal on successful deletion
+        onClose();
+      } else {
+        // Keep modal open on failure so user can see the error
+        setConfirmDelete(false);
+      }
     } catch (error) {
       console.error('Failed to delete task:', error);
+      setConfirmDelete(false);
+      // Error message will be shown in parent component
     } finally {
       setActionLoading(false);
-      setConfirmDelete(false);
     }
   }, [task?.id, onDelete, onClose, actionLoading, confirmDelete]);
+  
 
   /**
    * Handle edit button click
