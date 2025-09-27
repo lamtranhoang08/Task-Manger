@@ -1,8 +1,16 @@
-// src/components/tasks/KanbanBoard.jsx
+// src/components/tasks/KanbanBoard.jsx - Updated with TaskDetailModal Integration
 import React, { useState } from 'react';
 import { User, Folder } from 'lucide-react';
 
-const KanbanBoard = ({ tasks, onEdit, onDelete, onStatusChange }) => {
+const KanbanBoard = ({ 
+  tasks, 
+  onEdit, 
+  onDelete, 
+  onStatusChange, 
+  onTaskClick,
+  availableProjects = [],
+  currentUser 
+}) => {
   const columns = [
     { id: 'todo', title: 'To Do', color: 'bg-gray-100' },
     { id: 'progress', title: 'In Progress', color: 'bg-blue-100' },
@@ -77,6 +85,29 @@ const KanbanBoard = ({ tasks, onEdit, onDelete, onStatusChange }) => {
     return 'Unassigned';
   };
 
+  const handleTaskClick = (task, event) => {
+    // Only trigger detail modal if onTaskClick is provided and it's not a button click
+    if (onTaskClick && !event.defaultPrevented) {
+      onTaskClick(task, event);
+    }
+  };
+
+  const handleEditClick = (task, event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (onEdit) {
+      onEdit(task, event);
+    }
+  };
+
+  const handleDeleteClick = (task, event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (onDelete) {
+      onDelete(task.id, event);
+    }
+  };
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 min-h-[600px]">
       {columns.map(column => {
@@ -103,13 +134,14 @@ const KanbanBoard = ({ tasks, onEdit, onDelete, onStatusChange }) => {
                   draggable
                   onDragStart={(e) => handleDragStart(e, task)}
                   onDragEnd={handleDragEnd}
-                  className="bg-white p-3 rounded shadow cursor-grab active:cursor-grabbing transition-transform hover:shadow-md border-l-4 border-l-gray-300"
+                  onClick={(e) => handleTaskClick(task, e)}
+                  className="bg-white p-3 rounded shadow cursor-pointer hover:shadow-md border-l-4 border-l-gray-300 transition-all duration-200 hover:scale-[1.02]"
                   style={{
                     borderLeftColor: task.project_id ? '#3B82F6' : '#6B7280' // Blue for project tasks, gray for personal
                   }}
                 >
                   <div className="flex items-start justify-between mb-2">
-                    <h4 className="font-medium text-sm flex-1 pr-2">{task.title}</h4>
+                    <h4 className="font-medium text-sm flex-1 pr-2 line-clamp-2">{task.title}</h4>
                     {task.priority && (
                       <span className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${
                         task.priority === 'high' ? 'bg-red-100 text-red-800' :
@@ -129,23 +161,23 @@ const KanbanBoard = ({ tasks, onEdit, onDelete, onStatusChange }) => {
                   <div className="space-y-2 mb-3">
                     {task.project_name && (
                       <div className="flex items-center space-x-1 text-xs">
-                        <Folder className="w-3 h-3 text-blue-500" />
+                        <Folder className="w-3 h-3 text-blue-500 flex-shrink-0" />
                         <span className="text-blue-600 font-medium truncate">{task.project_name}</span>
                       </div>
                     )}
                     
                     <div className="flex items-center space-x-1 text-xs">
-                      <User className="w-3 h-3 text-gray-500" />
+                      <User className="w-3 h-3 text-gray-500 flex-shrink-0" />
                       <span className="text-gray-600 truncate">{formatAssignee(task)}</span>
                     </div>
                   </div>
 
                   <div className="flex justify-between items-center text-xs text-gray-500 mb-3">
-                    <span>
+                    <span className="truncate">
                       Due: {task.dueDate ? new Date(task.dueDate).toLocaleDateString() : 'No date'}
                     </span>
                     {!task.project_id && (
-                      <span className="bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded text-xs">
+                      <span className="bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded text-xs flex-shrink-0">
                         Personal
                       </span>
                     )}
@@ -154,20 +186,22 @@ const KanbanBoard = ({ tasks, onEdit, onDelete, onStatusChange }) => {
                   <div className="flex justify-between items-center pt-2 border-t border-gray-100">
                     <div className="flex space-x-1">
                       <button
-                        onClick={() => onEdit && onEdit(task)}
-                        className="text-blue-600 text-xs hover:text-blue-800 px-1 py-0.5 hover:bg-blue-50 rounded"
+                        onClick={(e) => handleEditClick(task, e)}
+                        className="text-blue-600 text-xs hover:text-blue-800 px-2 py-1 hover:bg-blue-50 rounded transition-colors"
                       >
                         Edit
                       </button>
                       <button
-                        onClick={() => onDelete && onDelete(task.id)}
-                        className="text-red-600 text-xs hover:text-red-800 px-1 py-0.5 hover:bg-red-50 rounded"
+                        onClick={(e) => handleDeleteClick(task, e)}
+                        className="text-red-600 text-xs hover:text-red-800 px-2 py-1 hover:bg-red-50 rounded transition-colors"
                       >
                         Delete
                       </button>
                     </div>
 
-                    <div className="text-gray-400 text-xs cursor-grab select-none">⠿ Drag</div>
+                    <div className="text-gray-400 text-xs cursor-grab select-none flex items-center gap-1">
+                      ⠿ <span className="hidden sm:inline">Drag</span>
+                    </div>
                   </div>
                 </div>
               ))}

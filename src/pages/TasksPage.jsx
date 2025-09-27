@@ -1,7 +1,9 @@
-// src/pages/TasksPage.jsx - Refactored with robust session management and error handling
+// src/pages/TasksPage.jsx - Enhanced with TaskDetailModal Integration
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useLocation, useNavigate } from 'react-router-dom';
 import TaskBoard from "../components/tasks/TaskBoard";
+import TaskDetailModal from "../components/common/modal/TaskDetailModal";
+import TaskModal from "../components/common/modal/TaskModal";
 import { supabase } from '../lib/supabase';
 import LoadingSpinner from "../components/common/LoadingSpinner";
 import { Plus, Filter, Search, Calendar, Users, CheckCircle2, Clock, RefreshCw } from "lucide-react";
@@ -92,6 +94,12 @@ export default function TasksPage({ currentUser, onAuthStateChange }) {
   const [viewMode, setViewMode] = useState("board");
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  
+  // Task Detail Modal state
+  const [isTaskDetailModalOpen, setIsTaskDetailModalOpen] = useState(false);
+  const [selectedTask, setSelectedTask] = useState(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState(null);
   
   // Filter state
   const [filterMode, setFilterMode] = useState("all");
@@ -557,6 +565,94 @@ export default function TasksPage({ currentUser, onAuthStateChange }) {
   }, [currentUser?.id, loadTasks, loadAvailableProjects]);
 
   // ========================================================================
+  // TASK MODAL HANDLERS
+  // ========================================================================
+
+  /**
+   * Handle task item click to show details
+   */
+  const handleTaskClick = useCallback((task) => {
+    setSelectedTask(task);
+    setIsTaskDetailModalOpen(true);
+  }, []);
+
+  /**
+   * Handle task edit from detail modal
+   */
+  const handleTaskEditFromDetail = useCallback((task) => {
+    // Close detail modal and open edit modal
+    setIsTaskDetailModalOpen(false);
+    setSelectedTask(null);
+    
+    // Set up edit modal
+    setEditingTask(task);
+    setIsEditModalOpen(true);
+  }, []);
+
+  /**
+   * Handle edit form submission
+   */
+  const handleEditSubmit = useCallback(async (updatedData) => {
+    if (!editingTask || !currentUser?.id) {
+      setError('User session expired. Please refresh the page.');
+      return;
+    }
+
+    const sessionValid = await validateSession();
+    if (!sessionValid) return;
+
+    await withRetry(async () => {
+      const backendUpdates = {
+        title: updatedData.title,
+        description: updatedData.description,
+        priority: updatedData.priority,
+        all_day: updatedData.allDay || false,
+        updated_at: new Date().toISOString(),
+        project_id: updatedData.projectId || null,
+        assigned_to: updatedData.assignedTo || null
+      };
+
+      if (updatedData.status) {
+        backendUpdates.status = STATUS_MAP[updatedData.status] || "pending";
+      }
+
+      if (updatedData.dueDate) {
+        backendUpdates.due_date = updatedData.dueDate;
+        backendUpdates.start_time = new Date(updatedData.dueDate).toISOString();
+        backendUpdates.end_time = new Date(updatedData.dueDate).toISOString();
+      } else if (updatedData.dueDate === null || updatedData.dueDate === '') {
+        backendUpdates.due_date = null;
+        backendUpdates.start_time = null;
+        backendUpdates.end_time = null;
+      }
+
+      const { error } = await supabase
+        .from('tasks')
+        .update(backendUpdates)
+        .eq('id', editingTask.id)
+        .abortSignal(abortControllerRef.current.signal);
+
+      if (error) throw error;
+
+      setTasks(prev => prev.map(task =>
+        task.id === editingTask.id ? { ...task, ...backendUpdates } : task
+      ));
+
+      // Close edit modal and cleanup
+      setIsEditModalOpen(false);
+      setEditingTask(null);
+    }, 'Updating task');
+  }, [editingTask, currentUser, validateSession, withRetry]);
+
+  /**
+   * Close task detail modal
+   */
+  const handleCloseTaskDetail = useCallback(() => {
+    setIsTaskDetailModalOpen(false);
+    setSelectedTask(null);
+  }, []);
+
+  // ========================================================================
   // COMPUTED VALUES
   // ========================================================================
 
@@ -716,6 +812,17 @@ export default function TasksPage({ currentUser, onAuthStateChange }) {
             event.preventDefault();
             handleRefresh();
             break;
+          case 'Escape':
+            // Close modals on Escape
+            if (isTaskDetailModalOpen) {
+              event.preventDefault();
+              handleCloseTaskDetail();
+            } else if (isEditModalOpen) {
+              event.preventDefault();
+              setIsEditModalOpen(false);
+              setEditingTask(null);
+            }
+            break;
           default:
             break;
         }
@@ -724,7 +831,7 @@ export default function TasksPage({ currentUser, onAuthStateChange }) {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleRefresh]);
+  }, [handleRefresh, isTaskDetailModalOpen, isEditModalOpen, handleCloseTaskDetail]);
 
   // ========================================================================
   // RENDER HELPERS
@@ -998,6 +1105,7 @@ export default function TasksPage({ currentUser, onAuthStateChange }) {
             onEdit={handleEdit}
             onStatusChange={handleStatusChange}
             onAdd={handleAdd}
+            onTaskClick={handleTaskClick}
             viewMode={viewMode}
             isAddModalOpen={isAddModalOpen}
             onAddModalClose={() => setIsAddModalOpen(false)}
@@ -1017,6 +1125,33 @@ export default function TasksPage({ currentUser, onAuthStateChange }) {
           </div>
         </div>
       )}
+
+      {/* Task Detail Modal */}
+      <TaskDetailModal
+        open={isTaskDetailModalOpen}
+        onClose={handleCloseTaskDetail}
+        task={selectedTask}
+        onEdit={handleTaskEditFromDetail}
+        onDelete={handleDelete}
+        onStatusChange={handleStatusChange}
+        availableProjects={availableProjects}
+        currentUser={currentUser}
+      />
+
+      {/* Task Edit Modal */}
+      <TaskModal
+        open={isEditModalOpen}
+        onClose={() => {
+          setIsEditModalOpen(false);
+          setEditingTask(null);
+        }}
+        onSubmit={handleEditSubmit}
+        initialData={editingTask}
+        isEditing={true}
+        allowProjectSelection={true}
+        availableProjects={availableProjects}
+        currentUser={currentUser}
+      />
     </div>
   );
 }

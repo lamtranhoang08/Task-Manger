@@ -1,4 +1,4 @@
-// src/components/tasks/TaskTableView.jsx - Modernized
+// src/components/tasks/TaskTableView.jsx - Updated with TaskDetailModal Integration
 import React, { useState } from 'react';
 import { 
   Calendar, 
@@ -17,7 +17,15 @@ import {
   Grid3X3
 } from 'lucide-react';
 
-export default function TaskTableView({ tasks, onEdit, onDelete, onStatusChange }) {
+export default function TaskTableView({ 
+  tasks, 
+  onEdit, 
+  onDelete, 
+  onStatusChange,
+  onTaskClick,
+  availableProjects = [],
+  currentUser 
+}) {
   const [sortBy, setSortBy] = useState('created_at');
   const [sortOrder, setSortOrder] = useState('desc');
   const [openDropdown, setOpenDropdown] = useState(null);
@@ -120,19 +128,69 @@ export default function TaskTableView({ tasks, onEdit, onDelete, onStatusChange 
     return { display, isOverdue, isToday };
   };
 
-  const handleStatusToggle = (task) => {
+  const handleStatusToggle = (task, event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
     const statusFlow = { todo: 'progress', progress: 'complete', complete: 'todo' };
     const newStatus = statusFlow[task.displayStatus];
     onStatusChange(task.id, { status: newStatus });
   };
 
+  const handleRowClick = (task, event) => {
+    // Don't trigger detail modal if clicking on action buttons or status toggle
+    if (event.target.closest('.action-cell') || event.target.closest('.status-toggle')) {
+      return;
+    }
+
+    if (onTaskClick && !event.defaultPrevented) {
+      onTaskClick(task, event);
+    }
+  };
+
+  const handleEditClick = (task, event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (onEdit) {
+      onEdit(task, event);
+    }
+  };
+
+  const handleDeleteClick = (task, event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (onDelete) {
+      onDelete(task.id, event);
+    }
+  };
+
   const ActionDropdown = ({ task }) => {
     const isOpen = openDropdown === task.id;
+
+    const handleToggle = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpenDropdown(isOpen ? null : task.id);
+    };
+
+    const handleEdit = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      handleEditClick(task, event);
+      setOpenDropdown(null);
+    };
+
+    const handleDelete = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      handleDeleteClick(task, event);
+      setOpenDropdown(null);
+    };
 
     return (
       <div className="relative">
         <button
-          onClick={() => setOpenDropdown(isOpen ? null : task.id)}
+          onClick={handleToggle}
           className="p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
         >
           <MoreHorizontal className="w-4 h-4 text-slate-400" />
@@ -146,20 +204,14 @@ export default function TaskTableView({ tasks, onEdit, onDelete, onStatusChange 
             />
             <div className="absolute right-0 top-8 z-20 w-40 bg-white rounded-xl border border-slate-200 shadow-lg py-1">
               <button
-                onClick={() => {
-                  onEdit(task);
-                  setOpenDropdown(null);
-                }}
+                onClick={handleEdit}
                 className="flex items-center w-full px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
               >
                 <Edit className="w-4 h-4 mr-3 text-slate-400" />
                 Edit
               </button>
               <button
-                onClick={() => {
-                  onDelete(task.id);
-                  setOpenDropdown(null);
-                }}
+                onClick={handleDelete}
                 className="flex items-center w-full px-3 py-2 text-sm text-red-600 hover:bg-red-50"
               >
                 <Trash2 className="w-4 h-4 mr-3 text-red-400" />
@@ -207,7 +259,9 @@ export default function TaskTableView({ tasks, onEdit, onDelete, onStatusChange 
         <table className="w-full">
           <thead className="bg-slate-50 border-b border-slate-200">
             <tr>
-              <th className="w-8 px-4 py-3"></th>
+              <th className="w-8 px-4 py-3 text-center">
+                <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Status</span>
+              </th>
               <SortHeader field="title" className="min-w-[300px]">
                 Task
               </SortHeader>
@@ -239,14 +293,16 @@ export default function TaskTableView({ tasks, onEdit, onDelete, onStatusChange 
               return (
                 <tr 
                   key={task.id} 
-                  className="group hover:bg-slate-50 transition-colors"
+                  onClick={(e) => handleRowClick(task, e)}
+                  className="group hover:bg-slate-50 transition-colors cursor-pointer"
                   style={{ '--row-index': index }}
                 >
                   {/* Status Toggle */}
-                  <td className="px-4 py-4">
+                  <td className="px-4 py-4 text-center">
                     <button
-                      onClick={() => handleStatusToggle(task)}
-                      className="group-hover:scale-110 transition-transform"
+                      onClick={(e) => handleStatusToggle(task, e)}
+                      className="group-hover:scale-110 transition-transform status-toggle"
+                      title="Click to change status"
                     >
                       <StatusIcon 
                         className={`w-5 h-5 ${statusConfig.color} ${
@@ -259,7 +315,7 @@ export default function TaskTableView({ tasks, onEdit, onDelete, onStatusChange 
                   {/* Task Title & Description */}
                   <td className="px-4 py-4">
                     <div className="min-w-0">
-                      <div className={`font-semibold text-slate-900 ${
+                      <div className={`font-semibold text-slate-900 hover:text-blue-600 transition-colors ${
                         task.displayStatus === 'complete' ? 'line-through text-slate-500' : ''
                       }`}>
                         {task.title}
@@ -272,7 +328,7 @@ export default function TaskTableView({ tasks, onEdit, onDelete, onStatusChange 
                     </div>
                   </td>
 
-                  {/* Status */}
+                  {/* Status Badge */}
                   <td className="px-4 py-4">
                     <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${statusConfig.bg} ${statusConfig.color}`}>
                       {statusConfig.label}
@@ -308,8 +364,8 @@ export default function TaskTableView({ tasks, onEdit, onDelete, onStatusChange 
                   <td className="px-4 py-4">
                     {task.project_name ? (
                       <div className="flex items-center gap-1 text-sm text-slate-600">
-                        <Folder className="w-3.5 h-3.5 text-slate-400" />
-                        <span className="truncate">{task.project_name}</span>
+                        <Folder className="w-3.5 h-3.5 text-blue-500" />
+                        <span className="truncate text-blue-600 font-medium">{task.project_name}</span>
                       </div>
                     ) : (
                       <span className="text-sm text-slate-400">Personal</span>
@@ -343,7 +399,7 @@ export default function TaskTableView({ tasks, onEdit, onDelete, onStatusChange 
                   </td>
 
                   {/* Actions */}
-                  <td className="px-4 py-4">
+                  <td className="px-4 py-4 action-cell">
                     <ActionDropdown task={task} />
                   </td>
                 </tr>
@@ -351,6 +407,13 @@ export default function TaskTableView({ tasks, onEdit, onDelete, onStatusChange 
             })}
           </tbody>
         </table>
+      </div>
+      
+      {/* Table Footer with Click Hint */}
+      <div className="bg-slate-50 px-4 py-2 border-t border-slate-200">
+        <div className="text-xs text-slate-500 text-center">
+          Click any row to view task details • Click status icon to change status • Use action menu for edit/delete
+        </div>
       </div>
     </div>
   );
